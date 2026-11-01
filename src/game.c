@@ -8,8 +8,8 @@
 #define GROUND_Y 200
 
 // For debugging purposes
-#define KEY_JUMP 'A'
-#define KEY_CROUCH 'B'
+#define KEY_JUMP '1'
+#define KEY_CROUCH 'A'
 #define KEY_RESTART 'C'
 
 #define DINO_X 30
@@ -27,6 +27,9 @@
 
 #define SPEED_MIN 4
 #define SPEED_MAX 10
+
+#define POINTS_PER_SECOND 9 // Based on real dinosaur game
+#define MS_PER_SPEED_STEP 10000
 
 typedef enum {
     PLAYING,
@@ -59,6 +62,7 @@ static int16_t speed;
 static bool old_score;
 static int16_t screen_w;
 static int16_t screen_h;
+static uint32_t start_time_us;
 
 static bool jump_pend;
 static bool restart_pend;
@@ -66,7 +70,6 @@ static bool crouch_pend;
 
 static void process_keys(void)
 {
-    uint32_t events;
     while (key_available())
     {   
         uint16_t events = key_pop();
@@ -112,7 +115,7 @@ static void erase_rect(Rect *to_erase)
 
 static Rect dinosaur_rect(void)
 {
-    Rect rect = {DINO_X, dinosaur.y, DINO_X + DINO_W, GROUND_Y, true};
+    Rect rect = {DINO_X, dinosaur.y, DINO_X + DINO_W, dinosaur.y + dinosaur.h, true};
     return rect;
 }
 
@@ -171,7 +174,7 @@ static void add_obstacle(int16_t x)
 
 static void update_dinosaur(bool jump, bool crouch)
 {
-    if (dinosaur.on_ground && jump && !crouch)
+    if (dinosaur.on_ground && jump)
     {
         dinosaur.vel_y = JUMP_VEL_Y;
         dinosaur.on_ground = false;
@@ -205,18 +208,22 @@ static void update_obstacle(void)
     {
         add_obstacle(screen_w + 40 + rand() % 100);
     }
-
-    if (!obstacle.scored && obstacle.x + obstacle.w < DINO_X)
-    {
-        obstacle.scored = true;
-        score += 1;
-        old_score = true;
-
-        speed = SPEED_MIN + (int16_t)(score / 10);
-        speed = speed > SPEED_MAX ? SPEED_MAX : speed;
-    }
 }
 
+static void update_score(void)
+{
+    uint32_t elapsed_time = (time_us_32() - start_time_us) / 1000;
+    uint32_t new_score = (elapsed_time * POINTS_PER_SECOND) / 1000;
+
+    if (new_score != score)
+    {
+        score = new_score;
+        old_score = true;
+    }
+
+    int16_t new_speed = SPEED_MIN + (int16_t)(elapsed_time / MS_PER_SPEED_STEP);
+    speed = new_speed > SPEED_MAX ? SPEED_MAX : new_speed;
+}
 static bool collides(void)
 {
     Rect dino = dinosaur_rect();
@@ -239,10 +246,12 @@ static void game_reset(void)
 
     score = 0;
     speed = SPEED_MIN;
+    start_time_us = time_us_32();
     add_obstacle(screen_w + 60);
 
     jump_pend = false;
     restart_pend = false;
+    crouch_pend = false;
 
     state = PLAYING;
     draw_score();
@@ -277,6 +286,7 @@ void game_tick(void)
     jump_pend = false;
 
     update_obstacle();
+    update_score();
     draw_frame();
 
     if (old_score)
