@@ -33,7 +33,7 @@ int main()
     init_adc_dma();
 
     for(;;) {
-        printf("adc test: %ld\n", adc_fifo_out);
+        // printf("adc test: %ld\n", adc_fifo_out);
         fflush(stdout);
         sleep_ms(1000);
     }
