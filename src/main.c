@@ -18,20 +18,22 @@
 
 //////////////////////////////////////////////////////////////////////////////
 const int ADC_X = 45; //Up: high adc x value, vice versa
+const int DMA_ADC_CH = 0; 
 
 /////////////////////////////////////////////////////////////////////////////
 
-void init_adc();
-uint16_t read_adc(); 
+uint32_t adc_fifo_out = 0;
+
+/////////////////////////////////////////////////////////////////////////////
+void init_adc_dma();
 
 int main()
 {
     stdio_init_all();
-    init_adc();
+    init_adc_dma();
 
     for(;;) {
-        // printf("adc test: %d\n", read_adc());
-        printf("test\n");
+        printf("adc test: %ld\n", adc_fifo_out);
         fflush(stdout);
         sleep_ms(1000);
     }
