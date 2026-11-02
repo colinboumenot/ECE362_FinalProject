@@ -31,6 +31,9 @@
 #define POINTS_PER_SECOND 9 // Based on real dinosaur game
 #define MS_PER_SPEED_STEP 10000
 
+#define JOY_THRESHOLD_HIGH 3500
+#define JOY_THRESHOLD_LOW 200
+
 typedef enum {
     PLAYING,
     GAME_OVER
@@ -67,6 +70,10 @@ static uint32_t start_time_us;
 static bool jump_pend;
 static bool restart_pend;
 static bool crouch_pend;
+static bool key_crouch; 
+
+extern int adc_fifo_out;
+uint8_t startup_buffer;
 
 static void process_keys(void)
 {
@@ -86,8 +93,22 @@ static void process_keys(void)
         }
         else if (key == KEY_CROUCH)
         {
-            crouch_pend = pressed;
+            key_crouch = pressed;
         }
+    }
+
+    if (startup_buffer > 0) startup_buffer--;
+    else 
+    {
+        bool joy_jump = (adc_fifo_out > JOY_THRESHOLD_HIGH);
+        bool joy_crouch = (adc_fifo_out < JOY_THRESHOLD_LOW);
+
+        if (joy_jump)
+        {
+            jump_pend = true;
+        }
+
+        crouch_pend = key_crouch || joy_crouch;
     }
 }
 
@@ -252,6 +273,8 @@ static void game_reset(void)
     jump_pend = false;
     restart_pend = false;
     crouch_pend = false;
+    key_crouch = false;
+    startup_buffer = 10;
 
     state = PLAYING;
     draw_score();

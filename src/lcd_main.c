@@ -14,6 +14,15 @@
 #define PIN_DC     32
 #define PIN_nRESET 33
 
+//////////////////////////////////////////////////////////////////////////////
+const int ADC_X = 45; //Up: high adc x value, vice versa
+const int DMA_ADC_CH = 0; 
+const int DMA_I2C_CH = 1;
+/////////////////////////////////////////////////////////////////////////////
+
+uint32_t adc_fifo_out = 0;
+
+void init_adc_dma();
 
 void init_spi_lcd() {
     gpio_set_function(PIN_CS, GPIO_FUNC_SIO);
@@ -44,6 +53,7 @@ int main() {
     keypad_init_pins();
     keypad_init_timer();
     game_init();
+    init_adc_dma();
 
     while (true)
     {
