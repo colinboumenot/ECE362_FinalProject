@@ -4,6 +4,8 @@
 #include "keypad.h"
 #include "game.h"
 #include <stdio.h>
+#include "i2c_storage.h"
+#include "score_ss7.h"
 #include <string.h>
 #include <math.h>   
 
@@ -55,9 +57,21 @@ int main() {
     game_init();
     init_adc_dma();
 
+
+    //Initialize I2C to EEPROM
+    init_i2c();
+
+    //Initialize seven segment display
+    //Load high score from EEPROM
+    init_ss();
+
+    //One note: currently the high score is set to be uint16 but the score tracker
+    //in game is set to be uint32 which would cause truncation
     while (true)
     {
         game_tick();
+        uint32_t current_score = get_score();
+        update_high_score(current_score);
         sleep_ms(30);
     }
 }

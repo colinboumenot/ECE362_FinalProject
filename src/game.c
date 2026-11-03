@@ -324,3 +324,8 @@ void game_tick(void)
         game_over();
     }
 }
+
+//Return score to I2C and seven segment display to track high score
+uint32_t get_score(void) {
+    return score;
+}
