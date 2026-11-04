@@ -8,8 +8,8 @@
 #define GROUND_Y 200
 
 // For debugging purposes
-#define KEY_JUMP '1'
-#define KEY_CROUCH 'A'
+#define KEY_JUMP '*'
+#define KEY_CROUCH '0'
 #define KEY_RESTART 'C'
 
 #define DINO_X 30
@@ -33,6 +33,7 @@
 
 #define JOY_THRESHOLD_HIGH 3500
 #define JOY_THRESHOLD_LOW 200
+#define HAS_CONTROLLER false
 
 typedef enum {
     PLAYING,
@@ -81,6 +82,9 @@ static void process_keys(void)
     {   
         uint16_t events = key_pop();
         bool pressed = (events & (1u << 8)) != 0;
+        printf("%s %c\n",
+                   (events & (1u << 8)) ? "Pressed" : "Released",
+                   (char)(events & 0xFF));
         char key = (char)(events & 0xFF);
 
         if (key == KEY_JUMP && pressed)
@@ -97,18 +101,26 @@ static void process_keys(void)
         }
     }
 
-    if (startup_buffer > 0) startup_buffer--;
-    else 
+    if (HAS_CONTROLLER)
     {
-        bool joy_jump = (adc_fifo_out > JOY_THRESHOLD_HIGH);
-        bool joy_crouch = (adc_fifo_out < JOY_THRESHOLD_LOW);
-
-        if (joy_jump)
+        if (startup_buffer > 0) startup_buffer--;
+        else 
         {
-            jump_pend = true;
+            bool joy_jump = (adc_fifo_out > JOY_THRESHOLD_HIGH);
+            bool joy_crouch = (adc_fifo_out < JOY_THRESHOLD_LOW);
+
+            if (joy_jump)
+            {
+                jump_pend = true;
+            }
+
+            crouch_pend = key_crouch || joy_crouch;
         }
 
-        crouch_pend = key_crouch || joy_crouch;
+    }
+    else
+    {
+        crouch_pend = key_crouch;
     }
 }
 

@@ -70,8 +70,9 @@ int main() {
     while (true)
     {
         game_tick();
-        uint32_t current_score = get_score();
+        // Might want to move these out of main loop to avoid uneccesary calls
+        uint32_t current_score = get_score(); 
         update_high_score(current_score);
-        sleep_ms(30);
+        sleep_ms(25);
     }
 }
