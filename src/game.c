@@ -4,6 +4,7 @@
 #include "lcd.h"
 #include "queue.h"
 #include "game.h"
+#include "pwm_sound_effect.h"
 
 #define GROUND_Y 200
 
@@ -376,6 +377,7 @@ static void update_dinosaur(bool jump, bool crouch)
     if (dinosaur.on_ground && jump)
     {
         dinosaur.vel_y = JUMP_VEL_Y;
+        sound_jump();
         dinosaur.on_ground = false;
     }
 
@@ -485,6 +487,7 @@ void game_init(void)
     build_sprites();
 
     srand(time_us_32());
+    sound_init();
     game_reset();
 }
 
@@ -520,6 +523,7 @@ void game_tick(void)
     if (collides())
     {
         state = GAME_OVER;
+        sound_jump();
 
         LCD_DrawPicture(DINO_X, GROUND_Y - DINO_H_STAND, &dino_stand_pic[DINO_FRAME_DEAD]);
         game_over();
