@@ -5,9 +5,7 @@
 #include "game.h"
 #include <stdio.h>
 #include "i2c_storage.h"
-#include "score_ss7.h"
-#include <string.h>
-#include <math.h>   
+#include "score_ss7.h" 
 
 /****************************************** */
 #define PIN_SDI    27
@@ -15,6 +13,7 @@
 #define PIN_SCK    30
 #define PIN_DC     32
 #define PIN_nRESET 33
+#define FRAME_US 33000 // Micro Second Gap Between Frames ~30 fps
 
 //////////////////////////////////////////////////////////////////////////////
 const int ADC_X = 45; //Up: high adc x value, vice versa
@@ -76,11 +75,18 @@ int main() {
     //in game is set to be uint32 which would cause truncation
     while (true)
     {
+        uint32_t frame_start = time_us_32();
+
         game_tick();
-        uint32_t current_score = get_score();
-        printf("Current score: %lu\n",
-        (unsigned long)current_score);
+        // Might want to move these out of main loop to avoid uneccesary calls
+        uint32_t current_score = get_score(); 
         update_high_score(current_score);
-        sleep_ms(30);
+
+        uint32_t frame_elapse = time_us_32() - frame_start;
+
+        if (frame_elapse < FRAME_US)
+        {
+            sleep_us(FRAME_US - frame_elapse);
+        }
     }
 }

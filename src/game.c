@@ -4,35 +4,46 @@
 #include "lcd.h"
 #include "queue.h"
 #include "game.h"
+#include "sprites.h"
+#include "pwm_sound_effect.h"
 
 #define GROUND_Y 200
 
 // For debugging purposes
-#define KEY_JUMP '1'
-#define KEY_CROUCH 'A'
+#define KEY_JUMP '*'
+#define KEY_CROUCH '0'
 #define KEY_RESTART 'C'
 
 #define DINO_X 30
-#define DINO_W 30
-#define DINO_H_STAND 40
-#define DINO_H_CROUCH 20
 #define GRAVITY 1
-#define JUMP_VEL_Y (-12)
+#define FAST_FALL_GRAVITY 3 // If holding down crouch
+#define JUMP_VEL_Y (-14)
 
-#define CACTUS_W 14
-#define CACTUS_H 34
-#define CROW_W 24
-#define CROW_H 14
-#define CROW_Y (GROUND_Y - 44)
+// Last frame used when game is over
+#define DINO_FRAME_RUN_COUNT 3
+#define DINO_FRAME_DEAD 3
 
-#define SPEED_MIN 4
-#define SPEED_MAX 10
+#define ANIMATION_TICKS 4
+#define CROW_TICKS 8
 
-#define POINTS_PER_SECOND 9 // Based on real dinosaur game
-#define MS_PER_SPEED_STEP 10000
+#define MAX_OBSTACLES 8
+#define SPAWN_GAP_MAX 260
+#define SPAWN_GAP_FRAMES_MIN 20
+#define SPAWN_GAP_FRAMES_RANGE 30
+#define CACTUS_GROUP_GAP 4
+#define BIRD_CHANCE 4
+#define LARGE_CACTUS_CHANCE 3
+#define BIRD_BAND_COUNT 3 // Possible bird heights
+
+
+// Based on real dinosaur game
+#define SPEED_RAMP_MS 120000 // Time in ms to go from SPEED_MIN to SPEED_MAX
+#define SPEED_MIN 6
+#define SPEED_MAX 13
 
 #define JOY_THRESHOLD_HIGH 3500
 #define JOY_THRESHOLD_LOW 200
+#define HAS_CONTROLLER false
 
 typedef enum {
     PLAYING,
@@ -48,24 +59,37 @@ typedef struct {
     int16_t y;
     int16_t vel_y;
     int16_t h;
+    int16_t w;
     bool on_ground;
 } Dinosaur;
 
 typedef struct {
-    int16_t x, y, w, h;
-    bool scored;
+    bool active;
+    Sprite *sprite;
+    int16_t x, y; // Top left corner position
+    uint8_t frame;
+    Rect prev;
 } Obstacle;
 
 static GameState state;
 static Dinosaur dinosaur;
-static Obstacle obstacle;
-static Rect dinosaur_prev, obstacle_prev;
+static Rect dinosaur_prev;
+
+static Obstacle obstacles[MAX_OBSTACLES];
+static int16_t spawn_gap; // Gap to wait before spawning next obstacle
+
 static uint32_t score;
 static int16_t speed;
-static bool old_score;
+static bool old_score; // True if score needs redrawing
+static uint64_t score_acc;
 static int16_t screen_w;
 static int16_t screen_h;
 static uint32_t start_time_us;
+static uint32_t last_tick_us;
+
+static uint8_t anim_frame;
+static uint8_t anim_tick;
+static uint8_t bird_anim_tick;
 
 static bool jump_pend;
 static bool restart_pend;
@@ -75,6 +99,434 @@ static bool key_crouch;
 extern int adc_fifo_out;
 uint8_t startup_buffer;
 
+// Bird heights, Low - Jump, Mid - Duck, High - Nothing
+static int16_t bird_band_bottom[BIRD_BAND_COUNT] = {GROUND_Y - 80, GROUND_Y - 32, GROUND_Y - 8};
+
+// Sprite storage
+// For each sprite: pixel buffer, Picture array, and Sprite
+static uint16_t dino_stand_px[DINO_FRAME_COUNT][DINO_W * DINO_H_STAND];
+static Picture dino_stand_pic[DINO_FRAME_COUNT];
+static Sprite dino_stand_sprite;
+
+static uint16_t dino_crouch_px[DINO_CROUCH_FRAMES][DINO_W_CROUCH * DINO_H_CROUCH];
+static Picture dino_crouch_pic[DINO_CROUCH_FRAMES];
+static Sprite dino_crouch_sprite;
+
+static uint16_t bird_px[BIRD_FRAMES][BIRD_W * BIRD_H];
+static Picture bird_pic[BIRD_FRAMES];
+static Sprite bird_sprite;
+
+static uint16_t cactus_small_px[CACTUS_FRAMES][CACTUS_W_SMALL * CACTUS_H_SMALL];
+static Picture cactus_small_pic[CACTUS_FRAMES];
+static Sprite cactus_small_sprite;
+
+static uint16_t cactus_large_px[CACTUS_FRAMES][CACTUS_W_LARGE * CACTUS_H_LARGE];
+static Picture cactus_large_pic[CACTUS_FRAMES];
+static Sprite cactus_large_sprite;
+
+// Scratch buffer for use if sprite is clipped at the screen edge, sized for largest possible sprite
+static uint16_t scratch_px[DINO_W * DINO_H_STAND];
+
+// 'x' is black '.' is white
+char dino_art[DINO_FRAME_COUNT][DINO_H_STAND][DINO_W + 1] =
+{
+    {
+        "......................xxxxxxxxxxxxxxxx..",
+        "......................xxxxxxxxxxxxxxxx..",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxx..xxxxxxxxxxxxxx",
+        "....................xxxx..xxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxx..........",
+        "....................xxxxxxxxxx..........",
+        "....................xxxxxxxxxxxxxxxx....",
+        "....................xxxxxxxxxxxxxxxx....",
+        "xx................xxxxxxxxxx............",
+        "xx................xxxxxxxxxx............",
+        "xx.............xxxxxxxxxxxxx............",
+        "xx.............xxxxxxxxxxxxx............",
+        "xxxx........xxxxxxxxxxxxxxxxxxxx........",
+        "xxxx........xxxxxxxxxxxxxxxxxxxx........",
+        "xxxxxx....xxxxxxxxxxxxxxxxxx..xx........",
+        "xxxxxx....xxxxxxxxxxxxxxxxxx..xx........",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "..xxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "..xxxxxxxxxxxxxxxxxxxxxxxx..............",
+        "....xxxxxxxxxxxxxxxxxxxxxx..............",
+        "....xxxxxxxxxxxxxxxxxxxxxx..............",
+        "......xxxxxxxxxxxxxxxxxx................",
+        "......xxxxxxxxxxxxxxxxxx................",
+        "........xxxxxxxxxxxxxx..................",
+        "........xxxxxxxxxxxxxx..................",
+        "..........xxxxxx..xxxx..................",
+        "..........xxxxxx..xxxx..................",
+        "..........xxxx......xx..................",
+        "..........xxxx......xx..................",
+        "..........xx........xx..................",
+        "..........xx........xx..................",
+        "..........xxxx......xxxx................",
+        "..........xxxx......xxxx................"
+    },
+    {
+        "......................xxxxxxxxxxxxxxxx..",
+        "......................xxxxxxxxxxxxxxxx..",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxx..xxxxxxxxxxxxxx",
+        "....................xxxx..xxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxx..........",
+        "....................xxxxxxxxxx..........",
+        "....................xxxxxxxxxxxxxxxx....",
+        "....................xxxxxxxxxxxxxxxx....",
+        "xx................xxxxxxxxxx............",
+        "xx................xxxxxxxxxx............",
+        "xx.............xxxxxxxxxxxxx............",
+        "xx.............xxxxxxxxxxxxx............",
+        "xxxx........xxxxxxxxxxxxxxxxxxxx........",
+        "xxxx........xxxxxxxxxxxxxxxxxxxx........",
+        "xxxxxx....xxxxxxxxxxxxxxxxxx..xx........",
+        "xxxxxx....xxxxxxxxxxxxxxxxxx..xx........",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "..xxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "..xxxxxxxxxxxxxxxxxxxxxxxx..............",
+        "....xxxxxxxxxxxxxxxxxxxxxx..............",
+        "....xxxxxxxxxxxxxxxxxxxxxx..............",
+        "......xxxxxxxxxxxxxxxxxx................",
+        "......xxxxxxxxxxxxxxxxxx................",
+        "........xxxxxxxxxxxxxx..................",
+        "........xxxxxxxxxxxxxx..................",
+        "..........xxxxxx....xxxxx...............",
+        "..........xxxxxx....xxxxx...............",
+        "..........xxxx..........................",
+        "..........xxxx..........................",
+        "..........xx............................",
+        "..........xx............................",
+        "..........xxxx..........................",
+        "..........xxxx.........................."
+    },
+    {
+        "......................xxxxxxxxxxxxxxxx..",
+        "......................xxxxxxxxxxxxxxxx..",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxx..xxxxxxxxxxxxxx",
+        "....................xxxx..xxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxx..........",
+        "....................xxxxxxxxxx..........",
+        "....................xxxxxxxxxxxxxxxx....",
+        "....................xxxxxxxxxxxxxxxx....",
+        "xx................xxxxxxxxxx............",
+        "xx................xxxxxxxxxx............",
+        "xx.............xxxxxxxxxxxxx............",
+        "xx.............xxxxxxxxxxxxx............",
+        "xxxx........xxxxxxxxxxxxxxxxxxxx........",
+        "xxxx........xxxxxxxxxxxxxxxxxxxx........",
+        "xxxxxx....xxxxxxxxxxxxxxxxxx..xx........",
+        "xxxxxx....xxxxxxxxxxxxxxxxxx..xx........",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "..xxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "..xxxxxxxxxxxxxxxxxxxxxxxx..............",
+        "....xxxxxxxxxxxxxxxxxxxxxx..............",
+        "....xxxxxxxxxxxxxxxxxxxxxx..............",
+        "......xxxxxxxxxxxxxxxxxx................",
+        "......xxxxxxxxxxxxxxxxxx................",
+        "........xxxxxxxxxxxxxx..................",
+        "........xxxxxxxxxxxxxx..................",
+        "..........xxxx....xxxx..................",
+        "..........xxxx....xxxx..................",
+        "............xxxx....xx..................",
+        "............xxxx....xx..................",
+        "....................xx..................",
+        "....................xx..................",
+        "....................xxxx................",
+        "....................xxxx................"
+    },
+    {
+        "......................xxxxxxxxxxxxxxxx..",
+        "......................xxxxxxxxxxxxxxxx..",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxx....xxxxxxxxxxxx",
+        "....................xxxx.xx.xxxxxxxxxxxx",
+        "....................xxxx.xx.xxxxxxxxxxxx",
+        "....................xxxx....xxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxxxxxx",
+        "....................xxxxxxxxxxxxxxxx....",
+        "....................xxxxxxxxxxxxxxxx....",
+        "xx................xxxxxxxxxx............",
+        "xx................xxxxxxxxxx............",
+        "xx.............xxxxxxxxxxxxx............",
+        "xx.............xxxxxxxxxxxxx............",
+        "xxxx........xxxxxxxxxxxxxxxxxxxx........",
+        "xxxx........xxxxxxxxxxxxxxxxxxxx........",
+        "xxxxxx....xxxxxxxxxxxxxxxxxx..xx........",
+        "xxxxxx....xxxxxxxxxxxxxxxxxx..xx........",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "..xxxxxxxxxxxxxxxxxxxxxxxxxx............",
+        "..xxxxxxxxxxxxxxxxxxxxxxxx..............",
+        "....xxxxxxxxxxxxxxxxxxxxxx..............",
+        "....xxxxxxxxxxxxxxxxxxxxxx..............",
+        "......xxxxxxxxxxxxxxxxxx................",
+        "......xxxxxxxxxxxxxxxxxx................",
+        "........xxxxxxxxxxxxxx..................",
+        "........xxxxxxxxxxxxxx..................",
+        "..........xxxxxx..xxxx..................",
+        "..........xxxxxx..xxxx..................",
+        "..........xxxx......xx..................",
+        "..........xxxx......xx..................",
+        "..........xx........xx..................",
+        "..........xx........xx..................",
+        "..........xxxx......xxxx................",
+        "..........xxxx......xxxx................",
+
+    }
+};
+
+char dino_crouch_art[DINO_CROUCH_FRAMES][DINO_H_CROUCH][DINO_W_CROUCH + 1] =
+{
+    {
+        "xx.....................................................",
+        "xx...................................xxxxxxxxxxxxxxxx..",
+        "xxxxxx........xxxxxxxxxxxxxxxxx......xxxxxxxxxxxxxxxx..",
+        "xxxxxx........xxxxxxxxxxxxxxxxx....xxxxxxxxxxxxxxxxxxxx",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..xxxxxxxxxxxxxx",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..xxxxxxxxxxxxxx",
+        "..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "....xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "....xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "......xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "......xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "........xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..........",
+        "........xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..........",
+        "..........xxxxxxxxxxxxxxxxxxxxxxx....xxxxxxxxxxxxxx....",
+        "..........xxxxxxxxxxxxxxxxxxxxxxx....xxxxxxxxxxxxxx....",
+        "............xxxxxxxxxxxxxxxxxxxxx......................",
+        "............xxxxxxxxxxxx.....xx........................",
+        "...........xx....xxxxxx......xx........................",
+        "...........xx....xxxxxx......xxxx......................",
+        "...........xxxx..xxxx........xxxx......................",
+        "...........xxxx..xxxx..................................",
+        ".................xx....................................",
+        ".................xx....................................",
+        ".................xxxx..................................",
+        ".................xxxx..................................",
+    },
+    {
+        "xx.....................................................",
+        "xx...................................xxxxxxxxxxxxxxxx..",
+        "xxxxxx........xxxxxxxxxxxxxxxxx......xxxxxxxxxxxxxxxx..",
+        "xxxxxx........xxxxxxxxxxxxxxxxx....xxxxxxxxxxxxxxxxxxxx",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..xxxxxxxxxxxxxx",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..xxxxxxxxxxxxxx",
+        "..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "....xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "....xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "......xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "......xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "........xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..........",
+        "........xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..........",
+        "..........xxxxxxxxxxxxxxxxxxxxxxx....xxxxxxxxxxxxxx....",
+        "..........xxxxxxxxxxxxxxxxxxxxxxx....xxxxxxxxxxxxxx....",
+        "............xxxxxxxxxxxxxxxxxxxxx......................",
+        "............xxxxxxxxxxxx.....xx........................",
+        "...........xxxxxx....xxxxx...xx........................",
+        "...........xxxxxx....xxxxx...xxxx......................",
+        "...........xxxx..............xxxx......................",
+        "...........xxxx........................................",
+        "...........xx..........................................",
+        "...........xx..........................................",
+        "...........xxxx........................................",
+        "...........xxxx........................................",
+    }
+};
+
+char bird_art[BIRD_FRAMES][BIRD_H][BIRD_W + 1] =
+{
+    {
+        "........xxxx..............................",
+        "........xxxx..............................",
+        "......xxxxxx..............................",
+        "......xxxxxx..............................",
+        "....xxxxxxxxxx............................",
+        "....xxxxxxxxxx............................",
+        "..xxxxxxxxxxxx............................",
+        "..xxxxxxxxxxxx............................",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxx...............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxx...............",
+        "............xxxxxxxxxxxxxxxxx.............",
+        "............xxxxxxxxxxxxxxxxx.............",
+        "..............xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "..............xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "................xxxxxxxxxxxxxxxxxxxx......",
+        "................xxxxxxxxxxxxxxxxxxxx......",
+        "................xxxxxxxxxxxxxxxxxxxxxxxx..",
+        "................xxxxxxxxxxxxxxxxxxxxxxxx..",
+        "................xxxxxxxx..................",
+        "................xxxxxxxx..................",
+        "................xxxxxx....................",
+        "................xxxxxx....................",
+        "................xxxx......................",
+        "................xxxx......................",
+        "................xxxx......................",
+        "................xx........................",
+        "................xx........................",
+    },
+    {
+        "..............xx..........................",
+        "..............xx..........................",
+        "..............xxxx........................",
+        "..............xxxx........................",
+        "..............xxxxxx......................",
+        "..............xxxxxx......................",
+        "........xxxx....xxxxxx....................",
+        "........xxxx....xxxxxx....................",
+        "......xxxxxx....xxxxxxxx..................",
+        "......xxxxxx....xxxxxxxx..................",
+        "....xxxxxxxxxx..xxxxxxxxxx................",
+        "....xxxxxxxxxx..xxxxxxxxxx................",
+        "..xxxxxxxxxxxx..xxxxxxxxxxxx..............",
+        "..xxxxxxxxxxxx..xxxxxxxxxxxx..............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx..............",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxx..............",
+        "............xxxxxxxxxxxxxxxxxx............",
+        "............xxxxxxxxxxxxxxxxxx............",
+        "..............xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "..............xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "................xxxxxxxxxxxxxxxxxxxx......",
+        "................xxxxxxxxxxxxxxxxxxxx......",
+        "..................xxxxxxxxxxxxxxxxxxxxxx..",
+        "..................xxxxxxxxxxxxxxxxxxxxxx..",
+        "....................xxxxxxxxxxxxxx........",
+        "....................xxxxxxxxxxxxxx........",
+        "......................xxxxxxxxxxxx........",
+    }
+};
+
+char cactus_large_art[CACTUS_FRAMES][CACTUS_H_LARGE][CACTUS_W_LARGE + 1] =
+{
+    {
+        ".........xxxxx.........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx....xxx.",
+        "........xxxxxxx...xxxxx",
+        ".xxx....xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxx...xxxxxxx...xxxxx",
+        "xxxxxxxxxxxxxxxxxxxxxx.",
+        "xxxxxxxxxxxxxxxxxxxxx..",
+        ".xxxxxxxxxxxxxxxxxxx...",
+        "..xxxxxxxxxxxxxxxxx....",
+        "...xxxxxxxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "........xxxxxxx........",
+        "......xxxxxxxxx........",
+    }
+};
+
+char cactus_small_art[CACTUS_FRAMES][CACTUS_H_SMALL][CACTUS_W_SMALL + 1] = 
+{
+    {
+        "......xxx......",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".xx..xxxxx...x.",
+        "xxxx.xxxxx..xxx",
+        "xxxx.xxxxx..xxx",
+        "xxxx.xxxxx..xxx",
+        "xxxx.xxxxx..xxx",
+        "xxxx.xxxxx..xxx",
+        "xxxx.xxxxx..xxx",
+        "xxxx.xxxxx..xxx",
+        "xxxxxxxxxx..xxx",
+        "xxxxxxxxxx..xxx",
+        ".xxxxxxxxx..xxx",
+        "..xxxxxxxx..xxx",
+        ".....xxxxx..xxx",
+        ".....xxxxxxxxxx",
+        ".....xxxxxxxxx.",
+        ".....xxxxxxxx..",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+        ".....xxxxx.....",
+    }
+};
+
+// Read all pending keypad events and controller activity
 static void process_keys(void)
 {
     while (key_available())
@@ -97,21 +549,30 @@ static void process_keys(void)
         }
     }
 
-    if (startup_buffer > 0) startup_buffer--;
-    else 
+    if (HAS_CONTROLLER)
     {
-        bool joy_jump = (adc_fifo_out > JOY_THRESHOLD_HIGH);
-        bool joy_crouch = (adc_fifo_out < JOY_THRESHOLD_LOW);
-
-        if (joy_jump)
+        if (startup_buffer > 0) startup_buffer--;
+        else 
         {
-            jump_pend = true;
+            bool joy_jump = (adc_fifo_out > JOY_THRESHOLD_HIGH);
+            bool joy_crouch = (adc_fifo_out < JOY_THRESHOLD_LOW);
+
+            if (joy_jump)
+            {
+                jump_pend = true;
+            }
+
+            crouch_pend = key_crouch || joy_crouch;
         }
 
-        crouch_pend = key_crouch || joy_crouch;
+    }
+    else
+    {
+        crouch_pend = key_crouch;
     }
 }
 
+// Fill a rectangle, clipped to the screen edges
 static void fill_rect(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color)
 {
     x0 = x0 < 0 ? 0 : x0;
@@ -125,41 +586,325 @@ static void fill_rect(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t c
     LCD_DrawFillRectangle(x0, y0, x1 - 1, y1 - 1, color);
 }
 
-static void erase_rect(Rect *to_erase)
+// Erase the parts of the old rectangle not overlapping with new, stops sprite from flashing
+static void erase_old(Rect old, Rect new)
 {
-    if (to_erase->valid)
+    if (!old.valid)
     {
-        fill_rect(to_erase->x0, to_erase->y0, to_erase->x1, to_erase->y1, WHITE);
-        to_erase->valid = false;
+        return;
+    }
+
+    if (old.y0 < new.y0) fill_rect(old.x0, old.y0, old.x1, new.y0, WHITE);
+    if (old.y1 > new.y1) fill_rect(old.x0, new.y1, old.x1, old.y1, WHITE);
+    if (old.x0 < new.x0) fill_rect(old.x0, old.y0, new.x0, old.y1, WHITE);
+    if (old.x1 > new.x1) fill_rect(new.x1, old.y0, old.x1, old.y1, WHITE);
+}
+
+// Bounding box of an obstacle
+static Rect obstacle_rect(const Obstacle *obs)
+{
+    Rect rect = {obs->x, obs->y, obs->x + obs->sprite->w, obs->y + obs->sprite->h, true};
+    return rect;
+}
+
+// Bounding box of dinosaur
+static Rect dinosaur_rect(void)
+{
+    Rect rect = {DINO_X, dinosaur.y, DINO_X + dinosaur.w, dinosaur.y + dinosaur.h, true};
+    return rect;
+}
+
+// Return first unused slot in obstacles or Null if full
+static Obstacle *free_space(void)
+{
+    for (int i = 0; i < MAX_OBSTACLES; i++)
+    {
+        if (!obstacles[i].active)
+        {
+            return &obstacles[i];
+        }
+    }
+    return NULL;
+}
+
+// Create an obstacle in a given slot and position
+static void place_obstacle(Obstacle *obs, Sprite *sprite, int16_t x, int16_t y)
+{
+    obs->active = true;
+    obs->sprite = sprite;
+    obs->x = x;
+    obs->y = y;
+    obs->frame = 0;
+    obs->prev.valid = false;
+}
+
+// Spawn bird at one of valid heights at right edge
+static void spawn_bird(void)
+{
+    Obstacle *obs = free_space();
+    if (obs == NULL)
+    {
+        return;
+    }
+
+    int16_t band = bird_band_bottom[rand() % BIRD_BAND_COUNT];
+    place_obstacle(obs, &bird_sprite, screen_w, band - bird_sprite.h);
+}
+
+// Spawn 1-3 small or 1-2 large cacti with CACTUS_GROUP_GAP between them
+static void spawn_cacti(void)
+{
+    bool large = (rand() % LARGE_CACTUS_CHANCE == 0);
+    Sprite *sprite = large ? &cactus_large_sprite : &cactus_small_sprite;
+    int count = large ? 1 + rand() % 2 : 1 + rand() % 3;
+    int16_t x = screen_w;
+
+    for (int i = 0; i < count; i++)
+    {
+        Obstacle *obs = free_space();
+        if (obs == NULL)
+        {
+            break;
+        }
+
+        place_obstacle(obs, sprite, x, GROUND_Y - sprite->h);
+        x += sprite->w + CACTUS_GROUP_GAP;
     }
 }
 
-static Rect dinosaur_rect(void)
+// Chooses to spawn cactus or bird at random
+static void spawn_group(void)
 {
-    Rect rect = {DINO_X, dinosaur.y, DINO_X + DINO_W, dinosaur.y + dinosaur.h, true};
-    return rect;
+    if (rand() % BIRD_CHANCE == 0)
+    {
+        spawn_bird();
+    }
+    else
+    {
+        spawn_cacti();
+    }
 }
 
-static Rect obstacle_rect(void)
+// Move every obstacle left, remove expired obstacles, and spawn new obstacle if space
+static void update_obstacles(void)
 {
-    Rect rect = {obstacle.x, obstacle.y, obstacle.x + obstacle.w, obstacle.y + obstacle.h, true};
-    return rect;
+    bool flap = false;
+    bird_anim_tick += 1;
+    if (bird_anim_tick >= CROW_TICKS)
+    {
+        bird_anim_tick = 0;
+        flap = true;
+    }
+
+    for (int i = 0; i < MAX_OBSTACLES; i++)
+    {
+        Obstacle *obs = &obstacles[i];
+        if (!obs->active)
+        {
+            continue;
+        }
+
+        obs->x -= speed;
+
+        if (flap && obs->sprite == &bird_sprite)
+        {
+            obs->frame = (obs->frame + 1) % bird_sprite.frame_count;
+        }
+
+        if (obs->x + obs->sprite->w <= 0)
+        {
+            if (obs->prev.valid)
+            {
+                fill_rect(obs->prev.x0, obs->prev.y0, obs->prev.x1, obs->prev.y1, WHITE);
+            }
+            obs->active = false;
+        }
+    }
+
+    int16_t rightmost = -1;
+    for (int i = 0; i < MAX_OBSTACLES; i++)
+    {
+        Obstacle *obs = &obstacles[i];
+        if (obs->active && obs->x + obs->sprite->w > rightmost)
+        {
+            rightmost = obs->x + obs->sprite->w;
+        }
+    }
+
+    if (rightmost < 0 || rightmost <= screen_w - spawn_gap)
+    {
+        spawn_group();
+        spawn_gap = speed * (SPAWN_GAP_FRAMES_MIN + rand() % SPAWN_GAP_FRAMES_RANGE);
+        if (spawn_gap > SPAWN_GAP_MAX)
+        {
+            spawn_gap = SPAWN_GAP_MAX;
+        }
+    }
 }
 
+// Return current picture of dinosaur
+static const Picture *dinosaur_picture(void)
+{
+    if (dinosaur.on_ground && dinosaur.h == DINO_H_CROUCH)
+    {
+        return &dino_crouch_pic[anim_frame % DINO_CROUCH_FRAMES];
+    }
+    return &dino_stand_pic[dinosaur.on_ground ? anim_frame : 0];
+}
+
+// Draw dinosaur at current position
+static void draw_dinosaur(void)
+{
+    LCD_DrawPicture(DINO_X, dinosaur.y, dinosaur_picture());
+}
+
+// Draw obstacle, if partly off screen only draw visible portion
+static void draw_obstacle(const Obstacle *obs)
+{
+    const Sprite *sprite = obs->sprite;
+    int16_t start_x0 = (obs->x < 0) ? -obs->x : 0;
+    int16_t start_x1 = (obs->x + sprite->w > screen_w) ? screen_w - obs->x : sprite->w;
+    int16_t visible_window = start_x1 - start_x0;
+
+    if (visible_window <= 0)
+    {
+        return;
+    }
+
+    if (visible_window == sprite->w)
+    {
+        LCD_DrawPicture(obs->x, obs->y, &sprite->frames[obs->frame]);
+        return;
+    }
+
+    const uint16_t *start = (const uint16_t *)sprite->frames[obs->frame].pixel_data;
+    for (int r = 0; r < sprite->h; r++)
+    {
+        for (int c = 0; c < visible_window; c++)
+        {
+            scratch_px[r * visible_window + c] = start[r * sprite->w + start_x0 + c];
+        }
+    }
+
+    Picture visible = {visible_window, sprite->h, 2, (unsigned char *)scratch_px};
+    LCD_DrawPicture(obs->x + start_x0, obs->y, &visible);
+}
+
+// Draw whole frame, first erase old non-overlapping parts, then draw new frame
 static void draw_frame(void)
 {
-    erase_rect(&dinosaur_prev);
-    erase_rect(&obstacle_prev);
+    Rect obs_new[MAX_OBSTACLES];
 
-    Rect new_obstacle = obstacle_rect();
-    fill_rect(new_obstacle.x0, new_obstacle.y0, new_obstacle.x1, new_obstacle.y1, BLACK);
-    obstacle_prev = new_obstacle;
+    for (int i = 0; i < MAX_OBSTACLES; i++)
+    {
+        Obstacle *obs = &obstacles[i];
+        if (!obs->active)
+        {
+            continue;
+        }
+        obs_new[i] = obstacle_rect(obs);
+        erase_old(obs->prev, obs_new[i]);
+    }
 
-    Rect new_dinosaur = dinosaur_rect();
-    fill_rect(new_dinosaur.x0, new_dinosaur.y0, new_dinosaur.x1, new_dinosaur.y1, BLACK);
-    dinosaur_prev = new_dinosaur;
+    Rect dino_new = dinosaur_rect();
+    erase_old(dinosaur_prev, dino_new);
+
+    for (int i = 0; i < MAX_OBSTACLES; i++)
+    {
+        Obstacle *obs = &obstacles[i];
+        if (!obs->active)
+        {
+            continue;
+        }
+        draw_obstacle(obs);
+        obs->prev = obs_new[i];
+        obs->prev.valid = true;
+    }
+
+    draw_dinosaur();
+    dinosaur_prev = dino_new;
 }
 
+// Check if given pixel is black
+static bool pixel_is_black(const Picture *pic, int x, int y)
+{
+    const uint16_t *px = (const uint16_t *)pic->pixel_data;
+    return px[y * pic->width + x] == BLACK;
+}
+
+// Check if 2 black pixels collide between dinosaur and obstacle
+static bool pixels_collide(const Obstacle *obs)
+{
+    const Picture *dino_pic = dinosaur_picture();
+    const Picture *obs_pic = &obs->sprite->frames[obs->frame];
+
+    Rect dino = dinosaur_rect();
+    Rect obs_curr = obstacle_rect(obs);
+
+    
+    int x0 = dino.x0 > obs_curr.x0 ? dino.x0 : obs_curr.x0;
+    int x1 = dino.x1 < obs_curr.x1 ? dino.x1 : obs_curr.x1;
+    int y0 = dino.y0 > obs_curr.y0 ? dino.y0 : obs_curr.y0;
+    int y1 = dino.y1 < obs_curr.y1 ? dino.y1 : obs_curr.y1;
+
+    for (int y = y0; y < y1; y++)
+    {
+        for (int x = x0; x < x1; x++)
+        {
+            if (pixel_is_black(dino_pic, x- dino.x0, y - dino.y0) && pixel_is_black(obs_pic, x - obs_curr.x0, y - obs_curr.y0))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Check if dinosaur hits obstacle, first check if bounding boxes collide
+// if boxes collide check to see if collision is between 2 black pixels
+static bool collides(void)
+{
+    Rect dino = dinosaur_rect();
+
+    for (int i = 0; i < MAX_OBSTACLES; i++)
+    {
+        if (!obstacles[i].active)
+        {
+            continue;
+        }
+
+        Rect obs = obstacle_rect(&obstacles[i]);
+        bool overlap = dino.x0 < obs.x1 && dino.x1 > obs.x0 && dino.y0 < obs.y1 && dino.y1 > obs.y0;
+
+        if (overlap && pixels_collide(&obstacles[i]))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Draw dinosaur with dead art, clear previous area and redraw to ensure no awkward overlapping
+static void draw_dead(void)
+{
+    int16_t dead_y = dinosaur.on_ground ? (GROUND_Y - DINO_H_STAND) : dinosaur.y;
+    int16_t top = dead_y < dinosaur.y ? dead_y : dinosaur.y;
+
+    fill_rect(DINO_X, top, DINO_X + DINO_W_CROUCH, GROUND_Y, WHITE);
+
+    for (int i = 0; i < MAX_OBSTACLES; i++)
+    {
+        if (obstacles[i].active)
+        {
+            draw_obstacle(&obstacles[i]);
+        }
+    }
+
+    LCD_DrawPicture(DINO_X, dead_y, &dino_stand_pic[DINO_FRAME_DEAD]);
+}
+
+// Draw score in upper right of screen
 static void draw_score(void)
 {
     char buffer[16];
@@ -168,48 +913,43 @@ static void draw_score(void)
     LCD_DrawString(8, 4, BLACK, WHITE, buffer, 16, 0);
 }
 
+// Draw game over message upper-middle-right to avoid overlap with dinosaur
 static void game_over(void)
 {
-    fill_rect(60, 90, 260, 140, WHITE);
-    LCD_DrawString(124, 100, BLACK, WHITE, "GAME OVER", 16, 0);
-    LCD_DrawString(88, 120, BLACK, WHITE, "Press C to Restart", 16, 0);
+    fill_rect(110, 70, 300, 130, WHITE);
+    LCD_DrawString(150, 80, BLACK, WHITE, "GAME OVER", 16, 0);
+    LCD_DrawString(130, 104, BLACK, WHITE, "Press C to Restart", 16, 0);
 }
 
-static void add_obstacle(int16_t x)
-{
-    obstacle.x = x;
-    obstacle.scored = false;
-    if (rand() % 5 == 0) // 1 in 5 obstacles are crows
-    {
-        obstacle.w = CROW_W;
-        obstacle.h = CROW_H;
-        obstacle.y = CROW_Y;
-    }
-    else
-    {
-        obstacle.w = CACTUS_W;
-        obstacle.h = CACTUS_H;
-        obstacle.y = GROUND_Y - CACTUS_H;
-    }
-}
-
+// Apply game physics to dinosaur
 static void update_dinosaur(bool jump, bool crouch)
 {
     if (dinosaur.on_ground && jump)
     {
         dinosaur.vel_y = JUMP_VEL_Y;
+        sound_jump();
         dinosaur.on_ground = false;
     }
 
     if (dinosaur.on_ground)
     {
-        dinosaur.h = crouch ? DINO_H_CROUCH : DINO_H_STAND;
+        if (crouch)
+        {
+            dinosaur.h = DINO_H_CROUCH;
+            dinosaur.w = DINO_W_CROUCH;
+        }
+        else
+        {
+            dinosaur.h = DINO_H_STAND;
+            dinosaur.w = DINO_W;
+        }
         dinosaur.y = GROUND_Y - dinosaur.h;
     }
     else
     {
         dinosaur.h = DINO_H_STAND;
-        dinosaur.vel_y += GRAVITY;
+        dinosaur.w = DINO_W;
+        dinosaur.vel_y += crouch ? FAST_FALL_GRAVITY : GRAVITY;
         dinosaur.y += dinosaur.vel_y;
 
         if (dinosaur.y + dinosaur.h >= GROUND_Y)
@@ -221,20 +961,32 @@ static void update_dinosaur(bool jump, bool crouch)
     }
 }
 
-static void update_obstacle(void)
+// Update dinosaur animation if on ground
+static void update_animation(void)
 {
-    obstacle.x -= speed;
-
-    if (obstacle.x + obstacle.w < 0)
+    if (!dinosaur.on_ground)
     {
-        add_obstacle(screen_w + 40 + rand() % 100);
+        return;
+    }
+
+    anim_tick += 1;
+    if (anim_tick >= ANIMATION_TICKS)
+    {
+        anim_tick = 0;
+        anim_frame = (anim_frame + 1) % DINO_FRAME_RUN_COUNT;
     }
 }
 
+// Update score based on elapsed time and score multiplier
 static void update_score(void)
 {
-    uint32_t elapsed_time = (time_us_32() - start_time_us) / 1000;
-    uint32_t new_score = (elapsed_time * POINTS_PER_SECOND) / 1000;
+    uint32_t current_time = time_us_32();
+
+    uint32_t dt_us = current_time - last_tick_us;
+    score_acc += (uint64_t)speed * dt_us * 15;
+    last_tick_us = current_time;
+
+    uint32_t new_score = (uint32_t)(score_acc / 10000000ULL);
 
     if (new_score != score)
     {
@@ -242,33 +994,39 @@ static void update_score(void)
         old_score = true;
     }
 
-    int16_t new_speed = SPEED_MIN + (int16_t)(elapsed_time / MS_PER_SPEED_STEP);
+    uint32_t elapsed_ms = (current_time - start_time_us) / 1000;
+    int16_t new_speed = SPEED_MIN + (int16_t)((elapsed_ms * (SPEED_MAX - SPEED_MIN)) / SPEED_RAMP_MS) ;
     speed = new_speed > SPEED_MAX ? SPEED_MAX : new_speed;
 }
-static bool collides(void)
-{
-    Rect dino = dinosaur_rect();
-    Rect obs = obstacle_rect();
-    return dino.x0 < obs.x1 && dino.x1 > obs.x0 && dino.y0 < obs.y1 && dino.y1 > obs.y0;
-}
 
+// Start a new run
 static void game_reset(void)
 {
     LCD_Clear(WHITE);
     fill_rect(0, GROUND_Y, screen_w, GROUND_Y + 1, BLACK);
 
     dinosaur.h = DINO_H_STAND;
+    dinosaur.w = DINO_W;
     dinosaur.y = GROUND_Y - DINO_H_STAND;
     dinosaur.vel_y = 0;
     dinosaur.on_ground = true;
 
     dinosaur_prev.valid = false;
-    obstacle_prev.valid = false;
+
+    anim_frame = 0;
+    anim_tick = 0;
 
     score = 0;
     speed = SPEED_MIN;
     start_time_us = time_us_32();
-    add_obstacle(screen_w + 60);
+
+    for (int i = 0; i < MAX_OBSTACLES; i++)
+    {
+        obstacles[i].active = false;
+        obstacles[i].prev.valid = false;
+    }
+    spawn_gap = SPEED_MIN * SPAWN_GAP_FRAMES_MIN;
+    bird_anim_tick = 0;
 
     jump_pend = false;
     restart_pend = false;
@@ -281,15 +1039,24 @@ static void game_reset(void)
     old_score = false;
 }
 
+// Build sprites and startup game
 void game_init(void)
-{
+{   
     screen_w = (int16_t)lcddev.width;
     screen_h = (int16_t)lcddev.height;
 
+    sprite_build(&dino_stand_sprite, dino_stand_pic, &dino_stand_px[0][0], DINO_FRAME_COUNT, DINO_H_STAND, DINO_W, &dino_art[0][0][0]);
+    sprite_build(&dino_crouch_sprite, dino_crouch_pic, &dino_crouch_px[0][0], DINO_CROUCH_FRAMES, DINO_H_CROUCH, DINO_W_CROUCH, &dino_crouch_art[0][0][0]);
+    sprite_build(&bird_sprite, bird_pic, &bird_px[0][0], BIRD_FRAMES, BIRD_H, BIRD_W, &bird_art[0][0][0]);
+    sprite_build(&cactus_small_sprite, cactus_small_pic, &cactus_small_px[0][0], CACTUS_FRAMES, CACTUS_H_SMALL, CACTUS_W_SMALL, &cactus_small_art[0][0][0]);
+    sprite_build(&cactus_large_sprite, cactus_large_pic, &cactus_large_px[0][0], CACTUS_FRAMES, CACTUS_H_LARGE, CACTUS_W_LARGE, &cactus_large_art[0][0][0]);
+
     srand(time_us_32());
+    sound_init();
     game_reset();
 }
 
+// Runs one frame of game
 void game_tick(void)
 {
     process_keys();
@@ -308,7 +1075,8 @@ void game_tick(void)
     update_dinosaur(jump_pend, crouch_pend);
     jump_pend = false;
 
-    update_obstacle();
+    update_animation();
+    update_obstacles();
     update_score();
     draw_frame();
 
@@ -321,6 +1089,8 @@ void game_tick(void)
     if (collides())
     {
         state = GAME_OVER;
+        sound_jump();
+        draw_dead();
         game_over();
     }
 }
