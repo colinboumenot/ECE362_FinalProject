@@ -16,6 +16,7 @@ static void set_freq(uint32_t freq_hz) {
     uint slice = pwm_gpio_to_slice_num(AUDIO_PIN);
 
     if (freq_hz == 0) {
+        pwm_set_enabled(slice, false);
         pwm_set_gpio_level(AUDIO_PIN, 0);   // duty = 0 → silent
         return;
     }
@@ -33,6 +34,7 @@ static void set_freq(uint32_t freq_hz) {
     pwm_set_clkdiv(slice, div);
     pwm_set_wrap(slice, wrap);
     pwm_set_gpio_level(AUDIO_PIN, wrap / 2);  // 50 % duty cycle
+    pwm_set_enabled(slice, true);
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
