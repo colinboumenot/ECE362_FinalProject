@@ -1116,6 +1116,7 @@ static void game_reset(void)
     score = 0;
     speed = SPEED_MIN;
     start_time_us = time_us_32();
+    last_tick_us = time_us_32();
 
     for (int i = 0; i < MAX_OBSTACLES; i++)
     {

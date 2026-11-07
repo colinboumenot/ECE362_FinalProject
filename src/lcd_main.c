@@ -71,18 +71,18 @@ int main() {
     //Load high score from EEPROM
     init_ss();
 
-    
+   
 
     //One note: currently the high score is set to be uint16 but the score tracker
     //in game is set to be uint32 which would cause truncation
     while (true)
     {
         uint32_t frame_start = time_us_32();
-
+        save_high_score(0);
         game_tick();
         // Might want to move these out of main loop to avoid uneccesary calls
         uint32_t current_score = get_score(); 
-        update_high_score(current_score);
+        //update_high_score(current_score);
 
         uint32_t frame_elapse = time_us_32() - frame_start;
 

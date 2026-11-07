@@ -143,6 +143,7 @@ bool update_high_score(uint16_t current_score) {
 
     //Save new score to EEPROM
     if (!save_high_score(current_score)) {
+        printf("HighSCORE SAVED\n");
         return false;
     }
 
