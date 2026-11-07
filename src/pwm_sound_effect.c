@@ -44,7 +44,7 @@ void sound_init(void) {
 
     uint slice = pwm_gpio_to_slice_num(AUDIO_PIN);
     pwm_config cfg = pwm_get_default_config();
-    pwm_init(slice, &cfg, true);       // start enabled, output silent
+    pwm_init(slice, &cfg, false);       // start enabled, output silent
     pwm_set_gpio_level(AUDIO_PIN, 0);  // duty = 0 until first tone
 }
 
