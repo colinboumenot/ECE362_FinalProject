@@ -48,7 +48,7 @@
 
 #define JOY_THRESHOLD_HIGH 3500
 #define JOY_THRESHOLD_LOW 200
-#define HAS_CONTROLLER false
+#define HAS_CONTROLLER true
 
 typedef enum {
     PLAYING,

@@ -5,6 +5,7 @@
 #include "hardware/irq.h"
 #include "hardware/gpio.h"
 #include "hardware/structs/sio.h"
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -49,6 +50,7 @@ void display_init_pins() {
 
 //Convert high score to seven segment display patterns
 void display_high_score(uint16_t score) {
+    printf("high Score %d\n, score");
     uint8_t digits[8];
 
     //Extract decimal digits
@@ -118,7 +120,7 @@ void display_init_timer() {
 //Initialize seven segment display
 void init_ss() {
     display_init_pins();
-    /*
+    
     // Load high score from EEPROM
     bool success = load_high_score(&high_score);
 
@@ -126,7 +128,7 @@ void init_ss() {
     if (!success || high_score == 0xFFFF) {
         high_score = 0;
     }
-    */
+    
     // Convert high score into display patterns
     display_high_score(high_score);
 
@@ -141,16 +143,17 @@ bool update_high_score(uint16_t current_score) {
         return true;
     }
 
+    high_score = current_score;
+
+    //Update seven-segment display
+    display_high_score(high_score);
     //Save new score to EEPROM
     if (!save_high_score(current_score)) {
         printf("HighSCORE SAVED\n");
         return false;
     }
 
-    high_score = current_score;
-
-    //Update seven-segment display
-    display_high_score(high_score);
+    
 
     return true;
 }
