@@ -5,6 +5,7 @@
 #include "hardware/irq.h"
 #include "hardware/gpio.h"
 #include "hardware/structs/sio.h"
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -34,6 +35,9 @@ static int index = 0;
 
 // Current high score
 static uint16_t high_score = 0;
+static uint16_t saved_high_score = 0;
+static bool storage_loaded = false;
+static uint64_t next_storage_retry_us = 0;
 
 
 //Initialize SS display pins
@@ -49,6 +53,7 @@ void display_init_pins() {
 
 //Convert high score to seven segment display patterns
 void display_high_score(uint16_t score) {
+    printf("High score %u\n", (unsigned)score);
     uint8_t digits[8];
 
     //Extract decimal digits
@@ -118,15 +123,20 @@ void display_init_timer() {
 //Initialize seven segment display
 void init_ss() {
     display_init_pins();
-
+    
     // Load high score from EEPROM
-    bool success = load_high_score(&high_score);
+    storage_loaded = load_high_score(&high_score);
 
     //If ECEPROM is erased or load high score is not a success
-    if (!success || high_score == 0xFFFF) {
+    if (!storage_loaded || high_score == 0xFFFF) {
         high_score = 0;
     }
-
+    saved_high_score = high_score;
+    next_storage_retry_us = 0;
+    if (!storage_loaded) {
+        printf("EEPROM load failed; will retry before saving\n");
+    }
+    
     // Convert high score into display patterns
     display_high_score(high_score);
 
@@ -137,19 +147,43 @@ void init_ss() {
 
 //Update high score if current score > high score
 bool update_high_score(uint16_t current_score) {
-    if (current_score <= high_score) {
-        return true;
+    if (current_score > high_score) {
+        high_score = current_score;
+        display_high_score(high_score);
     }
 
-    //Save new score to EEPROM
-    if (!save_high_score(current_score)) {
+    if (storage_loaded && high_score == saved_high_score) {
+        return true;
+    }
+    if (time_us_64() < next_storage_retry_us) {
         return false;
     }
 
-    high_score = current_score;
+    // A failed boot read must not allow a lower score to overwrite the record.
+    if (!storage_loaded) {
+        uint16_t stored_score;
+        if (!load_high_score(&stored_score)) {
+            next_storage_retry_us = time_us_64() + 1000000;
+            printf("EEPROM load failed; retrying in 1 second\n");
+            return false;
+        }
+        saved_high_score = stored_score == 0xFFFF ? 0 : stored_score;
+        storage_loaded = true;
+        if (saved_high_score > high_score) {
+            high_score = saved_high_score;
+            display_high_score(high_score);
+        }
+    }
 
-    //Update seven-segment display
-    display_high_score(high_score);
-
+    if (high_score == saved_high_score) {
+        return true;
+    }
+    if (!save_high_score(high_score)) {
+        next_storage_retry_us = time_us_64() + 1000000;
+        printf("EEPROM save failed; retrying in 1 second\n");
+        return false;
+    }
+    saved_high_score = high_score;
+    printf("EEPROM high score saved and verified: %u\n", (unsigned)high_score);
     return true;
 }

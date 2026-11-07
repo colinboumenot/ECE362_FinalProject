@@ -5,7 +5,9 @@
 #include "game.h"
 #include <stdio.h>
 #include "i2c_storage.h"
-#include "score_ss7.h" 
+#include "score_ss7.h"
+#include <string.h>
+#include <math.h>   
 
 /****************************************** */
 #define PIN_SDI    27
@@ -13,7 +15,7 @@
 #define PIN_SCK    30
 #define PIN_DC     32
 #define PIN_nRESET 33
-#define FRAME_US 33000 // Micro Second Gap Between Frames ~30 fps
+#define FRAME_US 33000 // FPus
 
 //////////////////////////////////////////////////////////////////////////////
 const int ADC_X = 45; //Up: high adc x value, vice versa
@@ -69,14 +71,14 @@ int main() {
     //Load high score from EEPROM
     init_ss();
 
-    
+   
 
     //One note: currently the high score is set to be uint16 but the score tracker
     //in game is set to be uint32 which would cause truncation
     while (true)
     {
         uint32_t frame_start = time_us_32();
-
+        //save_high_score(0);
         game_tick();
         // Might want to move these out of main loop to avoid uneccesary calls
         uint32_t current_score = get_score(); 
