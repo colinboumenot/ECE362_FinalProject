@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include "i2c_storage.h"
-#define EEPROM_ADDR 0x57 //Address of the EEPROM
+#define EEPROM_ADDR 0x57 //24AA32A 7-bit address with A0, A1, A2 high
 #define EEPROM_MEM_ADDR 0x0000 //Where we are storing the score in EEPROM
 
 void init_i2c() {
@@ -44,9 +44,10 @@ bool save_high_score(uint16_t score) {
     );
 
     if (result != 4) {
+        printf("EEPROM write to 0x%02X failed: result=%d (expected 4)\n",
+               EEPROM_ADDR, result);
         return false;
     }
-    printf("High Score Saved\n");
     // Allow the internal write cycle to finish, then verify persistence.
     // An acknowledged transfer alone does not prove the memory was written.
     sleep_ms(5);
@@ -68,9 +69,7 @@ bool load_high_score(uint16_t *score) {
 
     //Set eeprom memory address
     //Address that we read from to load the score
-    //Use i2c1 which is gpio pins 22 and 23
-    //printf("CLOCK %d\n", gpio_get(35));
-    //printf("DATALINE %d\n", gpio_get(34));
+    //Use i2c1 on GPIO 34 (SDA) and GPIO 35 (SCL).
     int result = i2c_write_timeout_us(
     i2c1,
     EEPROM_ADDR,
@@ -80,13 +79,12 @@ bool load_high_score(uint16_t *score) {
     100000  // 100 ms timeout
 );
     
-    //printf("SET EEPROM memory address 1\n");
-    //printf("RESULT %d", result);
     if (result != 2) {
+        printf("EEPROM address setup at 0x%02X failed: result=%d (expected 2)\n",
+               EEPROM_ADDR, result);
         return false;
-        }
+    }
 
-    printf("SET EEPROM memory address 2\n");
     //read 2 bytes from eeeprom containing the score
     result = i2c_read_timeout_us(
     i2c1,
@@ -98,9 +96,10 @@ bool load_high_score(uint16_t *score) {
 );
     
     if (result != 2) {
+        printf("EEPROM read from 0x%02X failed: result=%d (expected 2)\n",
+               EEPROM_ADDR, result);
         return false;
     }
-    printf("SET EEPROM memory address 3\n");
     //Set the value of score
     //score is 16 bits
     *score = (data[0] << 8) | data[1];
