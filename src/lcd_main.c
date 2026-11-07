@@ -61,9 +61,16 @@ int main() {
     //Initialize I2C to EEPROM
     init_i2c();
 
+    printf("I2C initialized\n");
+
+    //Reset eeprom memory just to test
+    //reset_high_score();
+
     //Initialize seven segment display
     //Load high score from EEPROM
     init_ss();
+
+    
 
     //One note: currently the high score is set to be uint16 but the score tracker
     //in game is set to be uint32 which would cause truncation
@@ -71,6 +78,8 @@ int main() {
     {
         game_tick();
         uint32_t current_score = get_score();
+        printf("Current score: %lu\n",
+        (unsigned long)current_score);
         update_high_score(current_score);
         sleep_ms(30);
     }
