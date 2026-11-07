@@ -118,7 +118,7 @@ void display_init_timer() {
 //Initialize seven segment display
 void init_ss() {
     display_init_pins();
-
+    /*
     // Load high score from EEPROM
     bool success = load_high_score(&high_score);
 
@@ -126,7 +126,7 @@ void init_ss() {
     if (!success || high_score == 0xFFFF) {
         high_score = 0;
     }
-
+    */
     // Convert high score into display patterns
     display_high_score(high_score);
 

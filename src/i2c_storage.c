@@ -3,6 +3,7 @@
 #include "hardware/i2c.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include "i2c_storage.h"
 #define EEPROM_ADDR 0x50 //Address of the EEPROM
 #define EEPROM_MEM_ADDR 0x0000 //Where we are storing the score in EEPROM
@@ -33,12 +34,13 @@ bool save_high_score(uint16_t score) {
 
     //wrute to the memory address of where to store the score
     //Store the score starting at EEPROM memory address 0x0000
-    int result = i2c_write_blocking(
-        i2c1,
-        EEPROM_ADDR,
-        data,
-        4,
-        false
+    int result = i2c_write_timeout_us(
+    i2c1,
+    EEPROM_ADDR,
+    data,
+    4,
+    false,
+    100000
     );
 
     if (result != 4) {
@@ -58,26 +60,28 @@ bool load_high_score(uint16_t *score) {
     //Set eeprom memory address
     //Address that we read from to load the score
     //Use i2c1 which is gpio pins 22 and 23
-    int result = i2c_write_blocking(
-        i2c1,
-        EEPROM_ADDR,
-        addr,
-        2,
-        true
-    );
+    int result = i2c_write_timeout_us(
+    i2c1,
+    EEPROM_ADDR,
+    addr,
+    2,
+    true,
+    100000  // 100 ms timeout
+);
 
     if (result != 2) {
         return false;
     }
 
     //read 2 bytes from eeeprom containing the score
-    result = i2c_read_blocking(
-        i2c1,
-        EEPROM_ADDR,
-        data,
-        2,
-        false
-    );
+    result = i2c_read_timeout_us(
+    i2c1,
+    EEPROM_ADDR,
+    data,
+    2,
+    false,
+    100000
+);
 
     if (result != 2) {
         return false;
